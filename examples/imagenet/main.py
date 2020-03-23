@@ -27,22 +27,24 @@ import torchvision.models as models
 from efficientnet_pytorch import EfficientNet
 
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
-parser.add_argument('data', metavar='DIR',
+parser.add_argument('-data', metavar='DIR', default='./data',
                     help='path to dataset')
-parser.add_argument('-a', '--arch', metavar='ARCH', default='resnet18',
-                    help='model architecture (default: resnet18)')
+parser.add_argument('-num-classes', default=2, type=int,
+                    help='number of classes')
+parser.add_argument('-a', '--arch', metavar='ARCH', default='efficientnet-b3',
+                    help='model architecture (default: resnet18, efficientnet-b3)')
 parser.add_argument('-j', '--workers', default=4, type=int, metavar='N',
                     help='number of data loading workers (default: 4)')
 parser.add_argument('--epochs', default=90, type=int, metavar='N',
                     help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
                     help='manual epoch number (useful on restarts)')
-parser.add_argument('-b', '--batch-size', default=256, type=int,
+parser.add_argument('-b', '--batch-size', default=16, type=int,
                     metavar='N',
                     help='mini-batch size (default: 256), this is the total '
                          'batch size of all GPUs on the current node when '
                          'using Data Parallel or Distributed Data Parallel')
-parser.add_argument('--lr', '--learning-rate', default=0.1, type=float,
+parser.add_argument('--lr', '--learning-rate', default=0.01, type=float,
                     metavar='LR', help='initial learning rate', dest='lr')
 parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
                     help='momentum')
@@ -55,7 +57,7 @@ parser.add_argument('--resume', default='', type=str, metavar='PATH',
                     help='path to latest checkpoint (default: none)')
 parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true',
                     help='evaluate model on validation set')
-parser.add_argument('--pretrained', dest='pretrained', action='store_true',
+parser.add_argument('--pretrained', dest='pretrained', action='store_true', default=True,
                     help='use pre-trained model')
 parser.add_argument('--world-size', default=-1, type=int,
                     help='number of nodes for distributed training')
@@ -67,7 +69,7 @@ parser.add_argument('--dist-backend', default='nccl', type=str,
                     help='distributed backend')
 parser.add_argument('--seed', default=None, type=int,
                     help='seed for initializing training. ')
-parser.add_argument('--gpu', default=None, type=int,
+parser.add_argument('--gpu', default=0, type=int,
                     help='GPU id to use.')
 parser.add_argument('--image_size', default=224, type=int,
                     help='image size')
@@ -136,7 +138,7 @@ def main_worker(gpu, ngpus_per_node, args):
     # create model
     if 'efficientnet' in args.arch:  # NEW
         if args.pretrained:
-            model = EfficientNet.from_pretrained(args.arch, advprop=args.advprop)
+            model = EfficientNet.from_pretrained(args.arch, advprop=args.advprop, num_classes=args.num_classes)
             print("=> using pre-trained model '{}'".format(args.arch))
         else:
             print("=> creating model '{}'".format(args.arch))
@@ -228,10 +230,12 @@ def main_worker(gpu, ngpus_per_node, args):
     else:
         train_sampler = None
 
+    # define train dataloader
     train_loader = torch.utils.data.DataLoader(
         train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
         num_workers=args.workers, pin_memory=True, sampler=train_sampler)
 
+    # whether use the efficientnet
     if 'efficientnet' in args.arch:
         image_size = EfficientNet.get_image_size(args.arch)
         val_transforms = transforms.Compose([
@@ -250,6 +254,7 @@ def main_worker(gpu, ngpus_per_node, args):
         ])
         print('Using image size', 224)
 
+    # define validation dataloader
     val_loader = torch.utils.data.DataLoader(
         datasets.ImageFolder(valdir, val_transforms),
         batch_size=args.batch_size, shuffle=False,
@@ -261,6 +266,7 @@ def main_worker(gpu, ngpus_per_node, args):
             print(res, file=f)
         return
 
+    # start train
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             train_sampler.set_epoch(epoch)
@@ -288,6 +294,19 @@ def main_worker(gpu, ngpus_per_node, args):
 
 
 def train(train_loader, model, criterion, optimizer, epoch, args):
+    """
+    train code
+    Args:
+        train_loader: train dataloder
+        model: train model
+        criterion: loss function
+        optimizer:
+        epoch:
+        args:
+
+    Returns:
+
+    """
     batch_time = AverageMeter('Time', ':6.3f')
     data_time = AverageMeter('Data', ':6.3f')
     losses = AverageMeter('Loss', ':.4e')
@@ -301,6 +320,7 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
 
     end = time.time()
     for i, (images, target) in enumerate(train_loader):
+        # print(images.shape)
         # measure data loading time
         data_time.update(time.time() - end)
 
@@ -313,10 +333,14 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
         loss = criterion(output, target)
 
         # measure accuracy and record loss
-        acc1, acc5 = accuracy(output, target, topk=(1, 5))
+        # acc1, acc5 = accuracy(output, target, topk=(1, 5))
+        # losses.update(loss.item(), images.size(0))
+        # top1.update(acc1[0], images.size(0))
+        # top5.update(acc5[0], images.size(0))
+
+        acc1, = accuracy(output, target, topk=(1,))
         losses.update(loss.item(), images.size(0))
         top1.update(acc1[0], images.size(0))
-        top5.update(acc5[0], images.size(0))
 
         # compute gradient and do SGD step
         optimizer.zero_grad()
@@ -335,10 +359,11 @@ def validate(val_loader, model, criterion, args):
     batch_time = AverageMeter('Time', ':6.3f')
     losses = AverageMeter('Loss', ':.4e')
     top1 = AverageMeter('Acc@1', ':6.2f')
-    top5 = AverageMeter('Acc@5', ':6.2f')
-    progress = ProgressMeter(len(val_loader), batch_time, losses, top1, top5,
+    # top5 = AverageMeter('Acc@5', ':6.2f')
+    # progress = ProgressMeter(len(val_loader), batch_time, losses, top1, top5,
+    #                          prefix='Test: ')
+    progress = ProgressMeter(len(val_loader), batch_time, losses, top1,
                              prefix='Test: ')
-
     # switch to evaluate mode
     model.eval()
 
@@ -354,10 +379,11 @@ def validate(val_loader, model, criterion, args):
             loss = criterion(output, target)
 
             # measure accuracy and record loss
-            acc1, acc5 = accuracy(output, target, topk=(1, 5))
+            # acc1, acc5 = accuracy(output, target, topk=(1, 5))
+            acc1, = accuracy(output, target, topk=(1,))
             losses.update(loss.item(), images.size(0))
             top1.update(acc1[0], images.size(0))
-            top5.update(acc5[0], images.size(0))
+            # top5.update(acc5[0], images.size(0))
 
             # measure elapsed time
             batch_time.update(time.time() - end)
@@ -367,20 +393,33 @@ def validate(val_loader, model, criterion, args):
                 progress.print(i)
 
         # TODO: this should also be done with the ProgressMeter
-        print(' * Acc@1 {top1.avg:.3f} Acc@5 {top5.avg:.3f}'
-              .format(top1=top1, top5=top5))
-
+        # print(' * Acc@1 {top1.avg:.3f} Acc@5 {top5.avg:.3f}'
+        #       .format(top1=top1, top5=top5))
+        print(' * Acc@1 {top1.avg:.3f}'
+              .format(top1=top1))
     return top1.avg
 
 
 def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
+    """
+    function for saving ckpt
+    Args:
+        state:
+        is_best:
+        filename:
+
+    Returns:
+
+    """
     torch.save(state, filename)
     if is_best:
         shutil.copyfile(filename, 'model_best.pth.tar')
 
 
 class AverageMeter(object):
-    """Computes and stores the average and current value"""
+    """
+    Computes and stores the average and current value
+    """
     def __init__(self, name, fmt=':f'):
         self.name = name
         self.fmt = fmt
@@ -421,19 +460,40 @@ class ProgressMeter(object):
 
 
 def adjust_learning_rate(optimizer, epoch, args):
-    """Sets the learning rate to the initial LR decayed by 10 every 30 epochs"""
+    """
+    Sets the learning rate to the initial LR decayed by 10 every 30 epochs
+    Args:
+        optimizer:
+        epoch:
+        args:
+
+    Returns:
+
+    """
     lr = args.lr * (0.1 ** (epoch // 30))
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
 
 
 def accuracy(output, target, topk=(1,)):
-    """Computes the accuracy over the k top predictions for the specified values of k"""
+    """
+    Computes the accuracy over the k top predictions for the specified values of k
+    Args:
+        output:
+        target: label
+        topk: number of samples for calculating accuracy
+
+    Returns:
+
+    """
+    # print(output.shape)
+    # print(target.shape)
     with torch.no_grad():
         maxk = max(topk)
         batch_size = target.size(0)
 
         _, pred = output.topk(maxk, 1, True, True)
+        # print(pred.shape)
         pred = pred.t()
         correct = pred.eq(target.view(1, -1).expand_as(pred))
 
